@@ -70,4 +70,12 @@ export const TEMPLATES = [
     fontSize: 48,
     bgImage: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&q=80&w=1080',
   },
+  {
+    id: 'editorial',
+    name: 'إنستغرام (راقي)',
+    bgColor: '#fdfcf8',
+    textColor: '#1a1a1a',
+    fontSize: 60,
+    bgImage: '',
+  },
 ];

@@ -21,7 +21,8 @@ import {
   Check,
   RefreshCw,
   Info,
-  AlertCircle
+  AlertCircle,
+  Maximize2
 } from 'lucide-react';
 import { 
   Surah, 
@@ -55,6 +56,7 @@ export default function App() {
   const [textColor, setTextColor] = useState('#ffffff');
   const [fontSize, setFontSize] = useState(55);
   const [selectedFont, setSelectedFont] = useState(ARABIC_FONTS[0]);
+  const [layoutStyle, setLayoutStyle] = useState<'classic' | 'editorial'>('classic');
   
   // Toggles
   const [showTranslation, setShowTranslation] = useState(true);
@@ -84,22 +86,23 @@ export default function App() {
     console.log(`FFmpeg Load Attempt ${attempt}: Isolated=${isIsolated}, SAB=${hasSAB}`);
     
     const configs = [
-      'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd',
-      'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd',
-      'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.4/dist/umd',
-      'https://unpkg.com/@ffmpeg/core@0.12.4/dist/umd'
+      { base: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd', type: 'umd' },
+      { base: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd', type: 'umd' },
+      { base: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.4/dist/umd', type: 'umd' },
+      { base: 'https://unpkg.com/@ffmpeg/core@0.12.4/dist/umd', type: 'umd' },
+      { base: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.2/dist/umd', type: 'umd' },
     ];
 
     if (attempt >= configs.length) {
       if (!hasSAB) {
         setFfmpegError("المتصفح يمنع تشغيل محرك التصدير لأسباب أمنية (SharedArrayBuffer missing). يرجى فتح الموقع في نافذة جديدة أو تجربة متصفح Chrome.");
       } else {
-        setFfmpegError("فشل تحميل محرك التصدير من جميع المصادر المتاحة. يرجى التحقق من اتصال الإنترنت.");
+        setFfmpegError("فشل تحميل محرك التصدير من جميع المصادر المتاحة. قد يكون ذلك بسبب ضعف الاتصال أو قيود الشبكة. يرجى المحاولة لاحقاً.");
       }
       return;
     }
 
-    const baseURL = configs[attempt];
+    const { base: baseURL, type } = configs[attempt];
     const ffmpeg = ffmpegRef.current;
 
     try {
@@ -107,23 +110,24 @@ export default function App() {
         console.log("FFmpeg Log:", message);
       });
 
-      const loadPromise = ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
-      });
+      const loadPromise = (async () => {
+        const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+        const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+        const workerURL = await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
+        await ffmpeg.load({ coreURL, wasmURL, workerURL });
+      })();
 
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("FFmpeg load timeout")), 20000)
+        setTimeout(() => reject(new Error("FFmpeg load timeout")), 60000)
       );
 
       await Promise.race([loadPromise, timeoutPromise]);
       setFfmpegLoaded(true);
       console.log("FFmpeg loaded successfully from:", baseURL);
-    } catch (error) {
+    } catch (error: any) {
       console.error(`FFmpeg load failed for ${baseURL}:`, error);
-      // Try next configuration
-      loadFFmpeg(attempt + 1);
+      // Try next configuration after a short delay
+      setTimeout(() => loadFFmpeg(attempt + 1), 1500);
     }
   };
 
@@ -166,6 +170,7 @@ export default function App() {
     setTextColor(template.textColor);
     setFontSize(template.fontSize);
     setIsVideoBg(false);
+    setLayoutStyle(template.id === 'editorial' ? 'editorial' : 'classic');
   };
 
   const handleSurahChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -244,42 +249,170 @@ export default function App() {
         const x = (canvas.width / 2) - (video.videoWidth / 2) * scale;
         const y = (canvas.height / 2) - (video.videoHeight / 2) * scale;
         ctx.drawImage(video, x, y, video.videoWidth * scale, video.videoHeight * scale);
-      } else {
+      } else if (bgImage) {
         const img = new Image();
         img.crossOrigin = "anonymous";
         img.src = bgImage;
-        img.onload = () => {
+        // Note: For export, we ensure images are loaded before calling render
+        if (img.complete) {
           const scale = Math.max(canvas.width / img.width, canvas.height / img.height);
           const x = (canvas.width / 2) - (img.width / 2) * scale;
           const y = (canvas.height / 2) - (img.height / 2) * scale;
           ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
-        };
+        } else {
+          img.onload = () => {
+            // Trigger a re-render once loaded
+            if (!isExporting) render();
+          };
+        }
+      } else if (layoutStyle === 'editorial') {
+        // Subtle gradient for editorial
+        const grad = ctx.createRadialGradient(canvas.width/2, canvas.height/2, 0, canvas.width/2, canvas.height/2, canvas.width);
+        grad.addColorStop(0, '#ffffff');
+        grad.addColorStop(1, '#f5f2ed');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
 
       // Overlay
-      if (showOverlay) {
+      if (showOverlay && (isVideoBg || bgImage)) {
         ctx.fillStyle = `rgba(0, 0, 0, ${overlayOpacity})`;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
 
       // Draw Arabic Text
       if (verses[currentVerseIndex]) {
-        ctx.fillStyle = textColor;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.font = `bold ${fontSize}px ${selectedFont.family}`;
-        
-        const text = verses[currentVerseIndex].text_uthmani;
-        const maxWidth = canvas.width * 0.85;
-        const centerY = canvas.height / 2 - (showTranslation ? 40 : 0);
-        wrapText(ctx, text, canvas.width / 2, centerY, maxWidth, fontSize * 1.6);
-
-        // Draw Translation
-        if (showTranslation && verses[currentVerseIndex].translation) {
-          ctx.font = `italic ${fontSize * 0.45}px sans-serif`;
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-          const transText = verses[currentVerseIndex].translation!;
-          wrapText(ctx, transText, canvas.width / 2, centerY + (fontSize * 1.8), maxWidth, fontSize * 0.6);
+        if (layoutStyle === 'editorial') {
+          // Editorial Layout (Instagram Style)
+          const margin = canvas.width * 0.08;
+          const maxWidth = canvas.width - (margin * 2);
+          
+          // 1. Surah Header Frame
+          if (selectedSurah) {
+            const headerY = canvas.height * 0.15;
+            const headerWidth = canvas.width * 0.8;
+            const headerHeight = 80;
+            const headerX = (canvas.width - headerWidth) / 2;
+            
+            // Draw Decorative Frame (Instagram/Quranic Style)
+            const frameColor = '#c5a059'; // Muted Gold
+            ctx.strokeStyle = frameColor;
+            ctx.lineWidth = 2;
+            
+            // Outer double lines
+            ctx.strokeRect(headerX, headerY, headerWidth, headerHeight);
+            ctx.strokeRect(headerX + 5, headerY + 5, headerWidth - 10, headerHeight - 10);
+            
+            // Decorative corners
+            const accentSize = 12;
+            ctx.fillStyle = frameColor;
+            
+            const corners = [
+              [headerX, headerY],
+              [headerX + headerWidth, headerY],
+              [headerX, headerY + headerHeight],
+              [headerX + headerWidth, headerY + headerHeight]
+            ];
+            
+            corners.forEach(([cx, cy]) => {
+              ctx.beginPath();
+              ctx.arc(cx, cy, accentSize, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.strokeStyle = '#ffffff';
+              ctx.lineWidth = 1;
+              ctx.stroke();
+            });
+            
+            // Surah Name in Header
+            ctx.fillStyle = '#1a1a1a';
+            ctx.font = `bold 36px ${selectedFont.family}`;
+            ctx.textAlign = 'center';
+            ctx.fillText(`سورة ${selectedSurah.name_arabic}`, canvas.width / 2, headerY + (headerHeight / 2) + 12);
+            
+            // 2. Arabic Text
+            const arabicY = headerY + headerHeight + 150;
+            ctx.fillStyle = '#1a1a1a';
+            ctx.font = `bold ${fontSize}px ${selectedFont.family}`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            
+            const verse = verses[currentVerseIndex];
+            const text = verse.text_uthmani;
+            wrapText(ctx, text, canvas.width / 2, arabicY, maxWidth, fontSize * 1.8);
+            
+            // 3. Translation Box
+            if (showTranslation && verse.translation) {
+              const transText = verse.translation!;
+              
+              // Measure translation text to size the box
+              ctx.font = `italic 30px sans-serif`;
+              const words = transText.split(' ');
+              let line = '';
+              let lineCount = 1;
+              for (let n = 0; n < words.length; n++) {
+                const testLine = line + words[n] + ' ';
+                const metrics = ctx.measureText(testLine);
+                if (metrics.width > maxWidth - 100 && n > 0) {
+                  lineCount++;
+                  line = words[n] + ' ';
+                } else {
+                  line = testLine;
+                }
+              }
+              
+              const boxPadding = 60;
+              const boxHeight = (lineCount * 45) + (boxPadding * 2);
+              const transY = arabicY + 400;
+              const boxY = transY - (boxHeight / 2);
+              
+              // Draw Box (Subtle Card)
+              ctx.shadowColor = 'rgba(0,0,0,0.05)';
+              ctx.shadowBlur = 20;
+              ctx.shadowOffsetY = 10;
+              ctx.fillStyle = '#f8f9fa';
+              ctx.beginPath();
+              if (ctx.roundRect) {
+                ctx.roundRect(margin, boxY, maxWidth, boxHeight, 40);
+              } else {
+                ctx.rect(margin, boxY, maxWidth, boxHeight);
+              }
+              ctx.fill();
+              ctx.shadowColor = 'transparent';
+              ctx.shadowBlur = 0;
+              ctx.shadowOffsetY = 0;
+              
+              // Translation Header
+              ctx.fillStyle = '#a0a0a0';
+              ctx.font = `bold 18px sans-serif`;
+              ctx.textAlign = 'left';
+              ctx.fillText('SAHEEH INTERNATIONAL (ENGLISH)', margin + 20, boxY - 25);
+              
+              // Translation Text
+              ctx.fillStyle = '#2d3436';
+              ctx.font = `italic 30px sans-serif`;
+              ctx.textAlign = 'center';
+              wrapText(ctx, transText, canvas.width / 2, transY, maxWidth - 120, 45);
+            }
+          }
+        } else {
+          // Classic Layout
+          ctx.fillStyle = textColor;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.font = `bold ${fontSize}px ${selectedFont.family}`;
+          
+          const text = verses[currentVerseIndex].text_uthmani;
+          const maxWidth = canvas.width * 0.85;
+          const centerY = canvas.height / 2 - (showTranslation ? 40 : 0);
+          wrapText(ctx, text, canvas.width / 2, centerY, maxWidth, fontSize * 1.6);
+  
+          // Draw Translation
+          if (showTranslation && verses[currentVerseIndex].translation) {
+            ctx.font = `italic ${fontSize * 0.45}px sans-serif`;
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            const transText = verses[currentVerseIndex].translation!;
+            wrapText(ctx, transText, canvas.width / 2, centerY + (fontSize * 1.8), maxWidth, fontSize * 0.6);
+          }
         }
       }
 
@@ -306,7 +439,7 @@ export default function App() {
 
     render();
     return () => cancelAnimationFrame(animationFrame);
-  }, [currentVerseIndex, verses, aspectRatio, bgImage, isVideoBg, bgColor, textColor, fontSize, selectedFont, showTranslation, showWatermark, watermarkText, showOverlay, overlayOpacity]);
+  }, [currentVerseIndex, verses, aspectRatio, bgImage, isVideoBg, bgColor, textColor, fontSize, selectedFont, showTranslation, showWatermark, watermarkText, showOverlay, overlayOpacity, layoutStyle]);
 
   const wrapText = (ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number) => {
     const words = text.split(' ');
@@ -487,48 +620,126 @@ export default function App() {
       const y = (canvas.height / 2) - (video.videoHeight / 2) * scale;
       ctx.drawImage(video, x, y, video.videoWidth * scale, video.videoHeight * scale);
     } else if (bgImage) {
-      // For export, we assume images are loaded or we use a placeholder
-      // In a real app, we'd wait for image load
-      // For now, we'll try to draw what's there
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.src = bgImage;
+      // During export, we should ideally wait for images, but for now we draw if complete
+      if (img.complete) {
+        const scale = Math.max(canvas.width / img.width, canvas.height / img.height);
+        const x = (canvas.width / 2) - (img.width / 2) * scale;
+        const y = (canvas.height / 2) - (img.height / 2) * scale;
+        ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
+      }
+    } else if (layoutStyle === 'editorial') {
+      const grad = ctx.createRadialGradient(canvas.width/2, canvas.height/2, 0, canvas.width/2, canvas.height/2, canvas.width);
+      grad.addColorStop(0, '#ffffff');
+      grad.addColorStop(1, '#f5f2ed');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
 
     // Overlay
-    if (showOverlay) {
+    if (showOverlay && (isVideoBg || bgImage)) {
       ctx.fillStyle = `rgba(0, 0, 0, ${overlayOpacity})`;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
 
     // Draw Arabic Text
     if (verses[vIndex]) {
-      ctx.fillStyle = textColor;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.font = `bold ${fontSize}px ${selectedFont.family}`;
-      
-      const text = verses[vIndex].text_uthmani;
-      const maxWidth = canvas.width * 0.85;
-      const centerY = canvas.height / 2 - (showTranslation ? 40 : 0);
-      wrapText(ctx, text, canvas.width / 2, centerY, maxWidth, fontSize * 1.6);
+      if (layoutStyle === 'editorial') {
+        const margin = canvas.width * 0.08;
+        const maxWidth = canvas.width - (margin * 2);
+        
+        if (selectedSurah) {
+          const headerY = canvas.height * 0.15;
+          const headerWidth = canvas.width * 0.8;
+          const headerHeight = 80;
+          const headerX = (canvas.width - headerWidth) / 2;
+          
+          const frameColor = '#c5a059';
+          ctx.strokeStyle = frameColor;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(headerX, headerY, headerWidth, headerHeight);
+          ctx.strokeRect(headerX + 5, headerY + 5, headerWidth - 10, headerHeight - 10);
+          
+          const accentSize = 12;
+          ctx.fillStyle = frameColor;
+          [[headerX, headerY], [headerX + headerWidth, headerY], [headerX, headerY + headerHeight], [headerX + headerWidth, headerY + headerHeight]].forEach(([cx, cy]) => {
+            ctx.beginPath(); ctx.arc(cx, cy, accentSize, 0, Math.PI * 2); ctx.fill();
+            ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1; ctx.stroke();
+          });
+          
+          ctx.fillStyle = '#1a1a1a';
+          ctx.font = `bold 36px ${selectedFont.family}`;
+          ctx.textAlign = 'center';
+          ctx.fillText(`سورة ${selectedSurah.name_arabic}`, canvas.width / 2, headerY + (headerHeight / 2) + 12);
+          
+          const arabicY = headerY + headerHeight + 150;
+          ctx.fillStyle = '#1a1a1a';
+          ctx.font = `bold ${fontSize}px ${selectedFont.family}`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          wrapText(ctx, verses[vIndex].text_uthmani, canvas.width / 2, arabicY, maxWidth, fontSize * 1.8);
+          
+          if (showTranslation && verses[vIndex].translation) {
+            const transText = verses[vIndex].translation!;
+            ctx.font = `italic 30px sans-serif`;
+            const words = transText.split(' ');
+            let line = ''; let lineCount = 1;
+            for (let n = 0; n < words.length; n++) {
+              const testLine = line + words[n] + ' ';
+              const metrics = ctx.measureText(testLine);
+              if (metrics.width > maxWidth - 100 && n > 0) { lineCount++; line = words[n] + ' '; } else { line = testLine; }
+            }
+            const boxPadding = 60;
+            const boxHeight = (lineCount * 45) + (boxPadding * 2);
+            const transY = arabicY + 400;
+            const boxY = transY - (boxHeight / 2);
+            
+            ctx.shadowColor = 'rgba(0,0,0,0.05)'; ctx.shadowBlur = 20; ctx.shadowOffsetY = 10;
+            ctx.fillStyle = '#f8f9fa';
+            ctx.beginPath();
+            if (ctx.roundRect) { ctx.roundRect(margin, boxY, maxWidth, boxHeight, 40); } else { ctx.rect(margin, boxY, maxWidth, boxHeight); }
+            ctx.fill();
+            ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+            
+            ctx.fillStyle = '#a0a0a0'; ctx.font = `bold 18px sans-serif`; ctx.textAlign = 'left';
+            ctx.fillText('SAHEEH INTERNATIONAL (ENGLISH)', margin + 20, boxY - 25);
+            
+            ctx.fillStyle = '#2d3436'; ctx.font = `italic 30px sans-serif`; ctx.textAlign = 'center';
+            wrapText(ctx, transText, canvas.width / 2, transY, maxWidth - 120, 45);
+          }
+        }
+      } else {
+        ctx.fillStyle = textColor;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = `bold ${fontSize}px ${selectedFont.family}`;
+        
+        const text = verses[vIndex].text_uthmani;
+        const maxWidth = canvas.width * 0.85;
+        const centerY = canvas.height / 2 - (showTranslation ? 40 : 0);
+        wrapText(ctx, text, canvas.width / 2, centerY, maxWidth, fontSize * 1.6);
 
-      // Draw Translation
-      if (showTranslation && verses[vIndex].translation) {
-        ctx.font = `italic ${fontSize * 0.45}px sans-serif`;
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-        const transText = verses[vIndex].translation!;
-        wrapText(ctx, transText, canvas.width / 2, centerY + (fontSize * 1.8), maxWidth, fontSize * 0.6);
+        if (showTranslation && verses[vIndex].translation) {
+          ctx.font = `italic ${fontSize * 0.45}px sans-serif`;
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+          const transText = verses[vIndex].translation!;
+          wrapText(ctx, transText, canvas.width / 2, centerY + (fontSize * 1.8), maxWidth, fontSize * 0.6);
+        }
       }
     }
 
     // Watermark
     if (showWatermark) {
       ctx.font = `bold 24px sans-serif`;
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.fillStyle = layoutStyle === 'editorial' ? 'rgba(0, 0, 0, 0.3)' : 'rgba(255, 255, 255, 0.5)';
       ctx.textAlign = 'right';
       ctx.fillText(watermarkText, canvas.width - 40, canvas.height - 40);
     }
 
     // Surah Info
-    if (selectedSurah) {
+    if (selectedSurah && layoutStyle !== 'editorial') {
       ctx.font = `bold 28px sans-serif`;
       ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
       ctx.textAlign = 'left';
@@ -581,9 +792,20 @@ export default function App() {
                   : 'تصدير الفيديو'}
           </button>
           {ffmpegError && (
-            <p className="text-[10px] text-red-400 mt-2 text-center max-w-[200px] mx-auto">
-              {ffmpegError}
-            </p>
+            <div className="flex flex-col items-center gap-2 mt-2">
+              <p className="text-[10px] text-red-400 text-center max-w-[200px] mx-auto">
+                {ffmpegError}
+              </p>
+              {ffmpegError.includes("SharedArrayBuffer") && (
+                <button 
+                  onClick={() => window.open(window.location.href, '_blank')}
+                  className="text-[10px] bg-white/10 hover:bg-white/20 px-3 py-1 rounded-lg flex items-center gap-1 transition-colors"
+                >
+                  <Maximize2 size={12} />
+                  فتح في نافذة جديدة
+                </button>
+              )}
+            </div>
           )}
         </div>
       </header>
